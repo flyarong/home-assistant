@@ -1,11 +1,12 @@
 """Support for UPnP/IGD Sensors."""
-from datetime import datetime
 import logging
 
 from homeassistant.core import callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.typing import HomeAssistantType
+import homeassistant.util.dt as dt_util
 
 from .const import DOMAIN as DOMAIN_UPNP, SIGNAL_REMOVE_SENSOR
 
@@ -93,9 +94,11 @@ class UpnpSensor(Entity):
     def device_info(self):
         """Get device info."""
         return {
-            "identifiers": {(DOMAIN_UPNP, self.unique_id)},
-            "name": self.name,
+            "connections": {(dr.CONNECTION_UPNP, self._device.udn)},
+            "identifiers": {(DOMAIN_UPNP, self._device.udn)},
+            "name": self._device.name,
             "manufacturer": self._device.manufacturer,
+            "model": self._device.model_name,
         }
 
 
@@ -164,7 +167,6 @@ class PerSecondUPnPIGDSensor(UpnpSensor):
         """Get unit we are measuring in."""
         raise NotImplementedError()
 
-    @property
     def _async_fetch_value(self):
         """Fetch a value from the IGD."""
         raise NotImplementedError()
@@ -199,10 +201,10 @@ class PerSecondUPnPIGDSensor(UpnpSensor):
 
         if self._last_value is None:
             self._last_value = new_value
-            self._last_update_time = datetime.now()
+            self._last_update_time = dt_util.utcnow()
             return
 
-        now = datetime.now()
+        now = dt_util.utcnow()
         if self._is_overflowed(new_value):
             self._state = None  # temporarily report nothing
         else:

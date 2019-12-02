@@ -19,14 +19,13 @@ from homeassistant.const import (
 )
 from homeassistant.exceptions import UnknownUser, Unauthorized
 import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.config_validation import (  # noqa
+from homeassistant.helpers.config_validation import (  # noqa: F401
     PLATFORM_SCHEMA,
     PLATFORM_SCHEMA_BASE,
     ENTITY_SERVICE_SCHEMA,
 )
 from homeassistant.helpers.entity import ToggleEntity
 from homeassistant.helpers.entity_component import EntityComponent
-from homeassistant.helpers import intent
 from homeassistant.loader import bind_hass
 import homeassistant.util.color as color_util
 
@@ -141,8 +140,6 @@ PROFILE_SCHEMA = vol.Schema(
     vol.ExactSequence((str, cv.small_float, cv.small_float, cv.byte))
 )
 
-INTENT_SET = "HassLightSet"
-
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -196,63 +193,6 @@ def preprocess_turn_off(params):
     return (False, None)  # Light should be turned on
 
 
-class SetIntentHandler(intent.IntentHandler):
-    """Handle set color intents."""
-
-    intent_type = INTENT_SET
-    slot_schema = {
-        vol.Required("name"): cv.string,
-        vol.Optional("color"): color_util.color_name_to_rgb,
-        vol.Optional("brightness"): vol.All(vol.Coerce(int), vol.Range(0, 100)),
-    }
-
-    async def async_handle(self, intent_obj):
-        """Handle the hass intent."""
-        hass = intent_obj.hass
-        slots = self.async_validate_slots(intent_obj.slots)
-        state = hass.helpers.intent.async_match_state(
-            slots["name"]["value"],
-            [state for state in hass.states.async_all() if state.domain == DOMAIN],
-        )
-
-        service_data = {ATTR_ENTITY_ID: state.entity_id}
-        speech_parts = []
-
-        if "color" in slots:
-            intent.async_test_feature(state, SUPPORT_COLOR, "changing colors")
-            service_data[ATTR_RGB_COLOR] = slots["color"]["value"]
-            # Use original passed in value of the color because we don't have
-            # human readable names for that internally.
-            speech_parts.append(
-                "the color {}".format(intent_obj.slots["color"]["value"])
-            )
-
-        if "brightness" in slots:
-            intent.async_test_feature(state, SUPPORT_BRIGHTNESS, "changing brightness")
-            service_data[ATTR_BRIGHTNESS_PCT] = slots["brightness"]["value"]
-            speech_parts.append("{}% brightness".format(slots["brightness"]["value"]))
-
-        await hass.services.async_call(DOMAIN, SERVICE_TURN_ON, service_data)
-
-        response = intent_obj.create_response()
-
-        if not speech_parts:  # No attributes changed
-            speech = f"Turned on {state.name}"
-        else:
-            parts = [f"Changed {state.name} to"]
-            for index, part in enumerate(speech_parts):
-                if index == 0:
-                    parts.append(f" {part}")
-                elif index != len(speech_parts) - 1:
-                    parts.append(f", {part}")
-                else:
-                    parts.append(f" and {part}")
-            speech = "".join(parts)
-
-        response.async_set_speech(speech)
-        return response
-
-
 async def async_setup(hass, config):
     """Expose light control via state machine and services."""
     component = hass.data[DOMAIN] = EntityComponent(
@@ -292,7 +232,8 @@ async def async_setup(hass, config):
         preprocess_turn_on_alternatives(params)
         turn_lights_off, off_params = preprocess_turn_off(params)
 
-        update_tasks = []
+        poll_lights = []
+        change_tasks = []
         for light in target_lights:
             light.async_set_context(service.context)
 
@@ -305,17 +246,22 @@ async def async_setup(hass, config):
                 preprocess_turn_on_alternatives(pars)
                 turn_light_off, off_pars = preprocess_turn_off(pars)
             if turn_light_off:
-                await light.async_turn_off(**off_pars)
+                task = light.async_request_call(light.async_turn_off(**off_pars))
             else:
-                await light.async_turn_on(**pars)
+                task = light.async_request_call(light.async_turn_on(**pars))
 
-            if not light.should_poll:
-                continue
+            change_tasks.append(task)
 
-            update_tasks.append(light.async_update_ha_state(True))
+            if light.should_poll:
+                poll_lights.append(light)
 
-        if update_tasks:
-            await asyncio.wait(update_tasks)
+        if change_tasks:
+            await asyncio.wait(change_tasks)
+
+        if poll_lights:
+            await asyncio.wait(
+                [light.async_update_ha_state(True) for light in poll_lights]
+            )
 
     # Listen for light on and light off service calls.
     hass.services.async_register(
@@ -332,8 +278,6 @@ async def async_setup(hass, config):
     component.async_register_entity_service(
         SERVICE_TOGGLE, LIGHT_TOGGLE_SCHEMA, "async_toggle"
     )
-
-    hass.helpers.intent.async_register(SetIntentHandler())
 
     return True
 

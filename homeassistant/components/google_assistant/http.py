@@ -1,20 +1,35 @@
 """Support for Google Actions Smart Home Control."""
+import asyncio
+from datetime import timedelta
 import logging
+from uuid import uuid4
+import jwt
 
+from aiohttp import ClientResponseError, ClientError
 from aiohttp.web import Request, Response
 
 # Typing imports
 from homeassistant.components.http import HomeAssistantView
-from homeassistant.core import callback
 from homeassistant.const import CLOUD_NEVER_EXPOSED_ENTITIES
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util import dt as dt_util
 
 from .const import (
     GOOGLE_ASSISTANT_API_ENDPOINT,
+    CONF_API_KEY,
     CONF_EXPOSE_BY_DEFAULT,
     CONF_EXPOSED_DOMAINS,
     CONF_ENTITY_CONFIG,
     CONF_EXPOSE,
+    CONF_REPORT_STATE,
     CONF_SECURE_DEVICES_PIN,
+    CONF_SERVICE_ACCOUNT,
+    CONF_CLIENT_EMAIL,
+    CONF_PRIVATE_KEY,
+    HOMEGRAPH_TOKEN_URL,
+    HOMEGRAPH_SCOPE,
+    REPORT_STATE_BASE_URL,
+    REQUEST_SYNC_BASE_URL,
 )
 from .smart_home import async_handle_message
 from .helpers import AbstractConfig
@@ -22,12 +37,49 @@ from .helpers import AbstractConfig
 _LOGGER = logging.getLogger(__name__)
 
 
+def _get_homegraph_jwt(time, iss, key):
+    now = int(time.timestamp())
+
+    jwt_raw = {
+        "iss": iss,
+        "scope": HOMEGRAPH_SCOPE,
+        "aud": HOMEGRAPH_TOKEN_URL,
+        "iat": now,
+        "exp": now + 3600,
+    }
+    return jwt.encode(jwt_raw, key, algorithm="RS256").decode("utf-8")
+
+
+async def _get_homegraph_token(hass, jwt_signed):
+    headers = {
+        "Authorization": "Bearer {}".format(jwt_signed),
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+    data = {
+        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "assertion": jwt_signed,
+    }
+
+    session = async_get_clientsession(hass)
+    async with session.post(HOMEGRAPH_TOKEN_URL, headers=headers, data=data) as res:
+        res.raise_for_status()
+        return await res.json()
+
+
 class GoogleConfig(AbstractConfig):
     """Config for manual setup of Google."""
 
-    def __init__(self, config):
+    def __init__(self, hass, config):
         """Initialize the config."""
+        super().__init__(hass)
         self._config = config
+        self._access_token = None
+        self._access_token_renew = None
+
+    @property
+    def enabled(self):
+        """Return if Google is enabled."""
+        return True
 
     @property
     def agent_user_id(self):
@@ -43,6 +95,11 @@ class GoogleConfig(AbstractConfig):
     def secure_devices_pin(self):
         """Return entity config."""
         return self._config.get(CONF_SECURE_DEVICES_PIN)
+
+    @property
+    def should_report_state(self):
+        """Return if states should be proactively reported."""
+        return self._config.get(CONF_REPORT_STATE)
 
     def should_expose(self, state) -> bool:
         """Return if entity should be exposed."""
@@ -73,11 +130,98 @@ class GoogleConfig(AbstractConfig):
         """If an entity should have 2FA checked."""
         return True
 
+    async def _async_request_sync_devices(self, agent_user_id: str):
+        if CONF_API_KEY in self._config:
+            await self.async_call_homegraph_api_key(
+                REQUEST_SYNC_BASE_URL, {"agentUserId": agent_user_id}
+            )
+        elif CONF_SERVICE_ACCOUNT in self._config:
+            await self.async_call_homegraph_api(
+                REQUEST_SYNC_BASE_URL, {"agentUserId": agent_user_id}
+            )
+        else:
+            _LOGGER.error("No configuration for request_sync available")
 
-@callback
-def async_register_http(hass, cfg):
-    """Register HTTP views for Google Assistant."""
-    hass.http.register_view(GoogleAssistantView(GoogleConfig(cfg)))
+    async def _async_update_token(self, force=False):
+        if CONF_SERVICE_ACCOUNT not in self._config:
+            _LOGGER.error("Trying to get homegraph api token without service account")
+            return
+
+        now = dt_util.utcnow()
+        if not self._access_token or now > self._access_token_renew or force:
+            token = await _get_homegraph_token(
+                self.hass,
+                _get_homegraph_jwt(
+                    now,
+                    self._config[CONF_SERVICE_ACCOUNT][CONF_CLIENT_EMAIL],
+                    self._config[CONF_SERVICE_ACCOUNT][CONF_PRIVATE_KEY],
+                ),
+            )
+            self._access_token = token["access_token"]
+            self._access_token_renew = now + timedelta(seconds=token["expires_in"])
+
+    async def async_call_homegraph_api_key(self, url, data):
+        """Call a homegraph api with api key authentication."""
+        websession = async_get_clientsession(self.hass)
+        try:
+            res = await websession.post(
+                url, params={"key": self._config.get(CONF_API_KEY)}, json=data
+            )
+            _LOGGER.debug(
+                "Response on %s with data %s was %s", url, data, await res.text()
+            )
+            res.raise_for_status()
+            return res.status
+        except ClientResponseError as error:
+            _LOGGER.error("Request for %s failed: %d", url, error.status)
+            return error.status
+        except (asyncio.TimeoutError, ClientError):
+            _LOGGER.error("Could not contact %s", url)
+            return 500
+
+    async def async_call_homegraph_api(self, url, data):
+        """Call a homegraph api with authenticaiton."""
+        session = async_get_clientsession(self.hass)
+
+        async def _call():
+            headers = {
+                "Authorization": "Bearer {}".format(self._access_token),
+                "X-GFE-SSL": "yes",
+            }
+            async with session.post(url, headers=headers, json=data) as res:
+                _LOGGER.debug(
+                    "Response on %s with data %s was %s", url, data, await res.text()
+                )
+                res.raise_for_status()
+                return res.status
+
+        try:
+            await self._async_update_token()
+            try:
+                return await _call()
+            except ClientResponseError as error:
+                if error.status == 401:
+                    _LOGGER.warning(
+                        "Request for %s unauthorized, renewing token and retrying", url
+                    )
+                    await self._async_update_token(True)
+                    return await _call()
+                raise
+        except ClientResponseError as error:
+            _LOGGER.error("Request for %s failed: %d", url, error.status)
+            return error.status
+        except (asyncio.TimeoutError, ClientError):
+            _LOGGER.error("Could not contact %s", url)
+            return 500
+
+    async def async_report_state(self, message):
+        """Send a state report to Google."""
+        data = {
+            "requestId": uuid4().hex,
+            "agentUserId": (await self.hass.auth.async_get_owner()).id,
+            "payload": message,
+        }
+        await self.async_call_homegraph_api(REPORT_STATE_BASE_URL, data)
 
 
 class GoogleAssistantView(HomeAssistantView):

@@ -2,14 +2,13 @@
 import logging
 from typing import Optional
 
+from pysupla import SuplaAPI
 import voluptuous as vol
 
 from homeassistant.const import CONF_ACCESS_TOKEN
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.discovery import load_platform
 from homeassistant.helpers.entity import Entity
-
-REQUIREMENTS = ["pysupla==0.0.3"]
 
 _LOGGER = logging.getLogger(__name__)
 DOMAIN = "supla"
@@ -40,7 +39,6 @@ CONFIG_SCHEMA = vol.Schema(
 
 def setup(hass, base_config):
     """Set up the Supla component."""
-    from pysupla import SuplaAPI
 
     server_confs = base_config[DOMAIN][CONF_SERVERS]
 

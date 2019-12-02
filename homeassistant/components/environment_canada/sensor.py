@@ -68,7 +68,6 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
         ec_data = ECData(coordinates=(lat, lon), language=config.get(CONF_LANGUAGE))
 
     sensor_list = list(ec_data.conditions.keys()) + list(ec_data.alerts.keys())
-    sensor_list.remove("icon_code")
     add_entities([ECSensor(sensor_type, ec_data) for sensor_type in sensor_list], True)
 
 
@@ -126,7 +125,7 @@ class ECSensor(Entity):
         value = sensor_data.get("value")
 
         if isinstance(value, list):
-            self._state = " | ".join([str(s.get("title")) for s in value])
+            self._state = " | ".join([str(s.get("title")) for s in value])[:255]
             self._attr.update(
                 {
                     ATTR_DETAIL: " | ".join([str(s.get("detail")) for s in value]),
@@ -135,6 +134,9 @@ class ECSensor(Entity):
             )
         elif self.sensor_type == "tendency":
             self._state = str(value).capitalize()
+        elif value is not None and len(value) > 255:
+            self._state = value[:255]
+            _LOGGER.info("Value for %s truncated to 255 characters", self._unique_id)
         else:
             self._state = value
 

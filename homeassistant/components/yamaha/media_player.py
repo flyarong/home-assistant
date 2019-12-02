@@ -2,11 +2,11 @@
 import logging
 
 import requests
+import rxv
 import voluptuous as vol
 
 from homeassistant.components.media_player import MediaPlayerDevice, PLATFORM_SCHEMA
 from homeassistant.components.media_player.const import (
-    DOMAIN,
     MEDIA_TYPE_MUSIC,
     SUPPORT_NEXT_TRACK,
     SUPPORT_PAUSE,
@@ -33,6 +33,8 @@ from homeassistant.const import (
 )
 import homeassistant.helpers.config_validation as cv
 
+from .const import DOMAIN, SERVICE_ENABLE_OUTPUT
+
 _LOGGER = logging.getLogger(__name__)
 
 ATTR_ENABLED = "enabled"
@@ -51,8 +53,6 @@ MEDIA_PLAYER_SCHEMA = vol.Schema({ATTR_ENTITY_ID: cv.comp_entity_ids})
 ENABLE_OUTPUT_SCHEMA = MEDIA_PLAYER_SCHEMA.extend(
     {vol.Required(ATTR_ENABLED): cv.boolean, vol.Required(ATTR_PORT): cv.string}
 )
-
-SERVICE_ENABLE_OUTPUT = "yamaha_enable_output"
 
 SUPPORT_YAMAHA = (
     SUPPORT_VOLUME_SET
@@ -82,7 +82,6 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
 
 def setup_platform(hass, config, add_entities, discovery_info=None):
     """Set up the Yamaha platform."""
-    import rxv
 
     # Keep track of configured receivers so that we don't end up
     # discovering a receiver dynamically that we have static config
@@ -336,8 +335,6 @@ class YamahaDevice(MediaPlayerDevice):
         self._call_playback_function(self.receiver.next, "next track")
 
     def _call_playback_function(self, function, function_text):
-        import rxv
-
         try:
             function()
         except rxv.exceptions.ResponseException:

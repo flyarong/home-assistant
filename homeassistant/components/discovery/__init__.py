@@ -10,6 +10,7 @@ import json
 from datetime import timedelta
 import logging
 
+from netdisco.discovery import NetworkDiscovery
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -50,6 +51,7 @@ CONFIG_ENTRY_HANDLERS = {
     SERVICE_DAIKIN: "daikin",
     SERVICE_TELLDUSLIVE: "tellduslive",
     SERVICE_IGD: "upnp",
+    SERVICE_PLEX: "plex",
 }
 
 SERVICE_HANDLERS = {
@@ -69,7 +71,6 @@ SERVICE_HANDLERS = {
     SERVICE_FREEBOX: ("freebox", None),
     SERVICE_YEELIGHT: ("yeelight", None),
     "panasonic_viera": ("media_player", "panasonic_viera"),
-    SERVICE_PLEX: ("plex", None),
     "yamaha": ("media_player", "yamaha"),
     "logitech_mediaserver": ("media_player", "squeezebox"),
     "directv": ("media_player", "directv"),
@@ -129,7 +130,6 @@ CONFIG_SCHEMA = vol.Schema(
 
 async def async_setup(hass, config):
     """Start a discovery service."""
-    from netdisco.discovery import NetworkDiscovery
 
     logger = logging.getLogger(__name__)
     netdisco = NetworkDiscovery()

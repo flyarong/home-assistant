@@ -2,7 +2,7 @@
 from pydeconz.sensor import Presence, Vibration
 
 from homeassistant.components.binary_sensor import BinarySensorDevice
-from homeassistant.const import ATTR_BATTERY_LEVEL, ATTR_TEMPERATURE
+from homeassistant.const import ATTR_TEMPERATURE
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
@@ -17,7 +17,6 @@ ATTR_VIBRATIONSTRENGTH = "vibrationstrength"
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
     """Old way of setting up deCONZ platforms."""
-    pass
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -27,13 +26,13 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     entity_handler = DeconzEntityHandler(gateway)
 
     @callback
-    def async_add_sensor(sensors):
+    def async_add_sensor(sensors, new=True):
         """Add binary sensor from deCONZ."""
         entities = []
 
         for sensor in sensors:
 
-            if sensor.BINARY:
+            if new and sensor.BINARY:
                 new_sensor = DeconzBinarySensor(sensor, gateway)
                 entity_handler.add_entity(new_sensor)
                 entities.append(new_sensor)
@@ -56,7 +55,7 @@ class DeconzBinarySensor(DeconzDevice, BinarySensorDevice):
     def async_update_callback(self, force_update=False):
         """Update the sensor's state."""
         changed = set(self._device.changed_keys)
-        keys = {"battery", "on", "reachable", "state"}
+        keys = {"on", "reachable", "state"}
         if force_update or any(key in changed for key in keys):
             self.async_schedule_update_ha_state()
 
@@ -79,8 +78,6 @@ class DeconzBinarySensor(DeconzDevice, BinarySensorDevice):
     def device_state_attributes(self):
         """Return the state attributes of the sensor."""
         attr = {}
-        if self._device.battery:
-            attr[ATTR_BATTERY_LEVEL] = self._device.battery
 
         if self._device.on is not None:
             attr[ATTR_ON] = self._device.on
